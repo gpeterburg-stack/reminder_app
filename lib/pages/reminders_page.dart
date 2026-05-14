@@ -107,9 +107,9 @@ class _RemindersPageState extends State<RemindersPage> {
           await Permission.ignoreBatteryOptimizations.request();
         }
         
-        debugPrint('✅ Все разрешения получены');
+        debugPrint('Все разрешения получены');
       } catch (e) {
-        debugPrint('❌ Ошибка запроса разрешений: $e');
+        debugPrint('Ошибка запроса разрешений: $e');
       }
     }
   }
@@ -178,13 +178,13 @@ class _RemindersPageState extends State<RemindersPage> {
     
     final hasExactPermission = await _hasExactAlarmPermission();
     if (!hasExactPermission) {
-      debugPrint('⚠️ Нет разрешения на точные будильники');
+      debugPrint('Нет разрешения на точные будильники');
       return;
     }
     
     final hasPermissions = await _checkPermissions();
     if (!hasPermissions) {
-      debugPrint('❌ Нет разрешений для уведомлений');
+      debugPrint('Нет разрешений для уведомлений');
       return;
     }
     
@@ -248,9 +248,9 @@ class _RemindersPageState extends State<RemindersPage> {
           androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         );
         newNotificationIds.add(notificationId);
-        debugPrint('✅ Уведомление $notificationId запланировано на $scheduledDate для лекарства: $medicationInfo');
+        debugPrint('Уведомление $notificationId запланировано на $scheduledDate для лекарства: $medicationInfo');
       } catch (e) {
-        debugPrint('❌ Ошибка планирования для дня $day: $e');
+        debugPrint('Ошибка планирования для дня $day: $e');
       }
     }
     
@@ -276,7 +276,7 @@ class _RemindersPageState extends State<RemindersPage> {
         final dosage = medication['dosage']?.toString() ?? '';
         return '$name • $dosage';
       } else {
-        debugPrint('⚠️ Лекарство с ID $medicationId не найдено в списке');
+        debugPrint('Лекарство с ID $medicationId не найдено в списке');
         if (medicationName.isNotEmpty) {
           return '$medicationName • $medicationDosage';
         }
@@ -306,10 +306,10 @@ class _RemindersPageState extends State<RemindersPage> {
           if (possibleId == 0) possibleId = day;
           await _notificationsPlugin.cancel(possibleId);
         }
-        debugPrint('🗑 Отменены возможные уведомления для $alarmId');
+        debugPrint('Отменены возможные уведомления для $alarmId');
       }
     } catch (e) {
-      debugPrint('❌ Ошибка отмены уведомлений для $alarmId: $e');
+      debugPrint('Ошибка отмены уведомлений для $alarmId: $e');
     }
   }
 
@@ -323,7 +323,7 @@ class _RemindersPageState extends State<RemindersPage> {
       });
       await file.writeAsString(jsonEncode(idsToSave));
     } catch (e) {
-      debugPrint('❌ Ошибка сохранения ID уведомлений: $e');
+      debugPrint('Ошибка сохранения ID уведомлений: $e');
     }
   }
 
@@ -342,12 +342,12 @@ class _RemindersPageState extends State<RemindersPage> {
         }
       }
     } catch (e) {
-      debugPrint('❌ Ошибка загрузки ID уведомлений: $e');
+      debugPrint('Ошибка загрузки ID уведомлений: $e');
     }
   }
 
   Future<void> _scheduleAllNotifications() async {
-    debugPrint('🔄 Планирование всех уведомлений...');
+    debugPrint('Планирование всех уведомлений...');
     int scheduledCount = 0;
     
     for (var alarm in _alarms) {
@@ -356,7 +356,7 @@ class _RemindersPageState extends State<RemindersPage> {
         if (medicationId.isNotEmpty) {
           final medicationExists = _medications.any((med) => med['id'] == medicationId);
           if (!medicationExists) {
-            debugPrint('⚠️ Пропуск напоминания: лекарство с ID $medicationId не найдено');
+            debugPrint('Пропуск напоминания: лекарство с ID $medicationId не найдено');
             continue;
           }
         }
@@ -366,13 +366,13 @@ class _RemindersPageState extends State<RemindersPage> {
       }
     }
     
-    debugPrint('✅ Запланировано уведомлений: $scheduledCount');
+    debugPrint('Запланировано уведомлений: $scheduledCount');
     await _checkPendingNotifications();
   }
 
   Future<void> _checkPendingNotifications() async {
     final pending = await _notificationsPlugin.pendingNotificationRequests();
-    debugPrint('📋 Всего ожидающих уведомлений: ${pending.length}');
+    debugPrint('Всего ожидающих уведомлений: ${pending.length}');
   }
 
   Future<void> _clearAllNotifications() async {
@@ -406,11 +406,11 @@ class _RemindersPageState extends State<RemindersPage> {
               };
             }).toList();
           });
-          debugPrint('📦 Загружено лекарств: ${_medications.length}');
+          debugPrint('Загружено лекарств: ${_medications.length}');
         }
       }
     } catch (e) {
-      debugPrint('❌ Ошибка при загрузке лекарств: $e');
+      debugPrint('Ошибка при загрузке лекарств: $e');
     }
   }
 
@@ -432,7 +432,7 @@ class _RemindersPageState extends State<RemindersPage> {
           }).toList();
           
           if (validAlarms.length != jsonList.length) {
-            debugPrint('⚠️ Удалено ${jsonList.length - validAlarms.length} невалидных напоминаний');
+            debugPrint('Удалено ${jsonList.length - validAlarms.length} невалидных напоминаний');
           }
           
           setState(() {
@@ -462,7 +462,7 @@ class _RemindersPageState extends State<RemindersPage> {
             await _saveAlarmsToFile();
           }
           
-          debugPrint('⏰ Загружено напоминаний: ${_alarms.length}');
+          debugPrint('Загружено напоминаний: ${_alarms.length}');
           await _scheduleAllNotifications();
         } else {
           _addTestAlarms();
@@ -471,7 +471,7 @@ class _RemindersPageState extends State<RemindersPage> {
         _addTestAlarms();
       }
     } catch (e) {
-      debugPrint('❌ Ошибка при загрузке напоминаний: $e');
+      debugPrint('Ошибка при загрузке напоминаний: $e');
       _addTestAlarms();
     }
   }
@@ -536,7 +536,7 @@ class _RemindersPageState extends State<RemindersPage> {
       
       await file.writeAsString(jsonEncode(jsonList));
     } catch (e) {
-      debugPrint('❌ Ошибка при сохранении напоминания: $e');
+      debugPrint('Ошибка при сохранении напоминания: $e');
     }
   }
 
@@ -624,7 +624,7 @@ class _RemindersPageState extends State<RemindersPage> {
   }
 
   void _toggleAlarm(String id, bool value) async {
-    debugPrint('🔄 Переключение напоминания $id: ${value ? "Вкл" : "Выкл"}');
+    debugPrint('Переключение напоминания $id: ${value ? "Вкл" : "Выкл"}');
     setState(() {
       final index = _alarms.indexWhere((alarm) => alarm['id'] == id);
       if (index != -1) {
