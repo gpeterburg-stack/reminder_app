@@ -590,7 +590,7 @@ class _RemindersPageState extends State<RemindersPage> {
   }
 
   void _updateAlarm(String id, Map<String, dynamic> updatedAlarm) async {
-    debugPrint('✏️ Обновление напоминания: $id');
+    debugPrint('Обновление напоминания: $id');
     setState(() {
       final index = _alarms.indexWhere((alarm) => alarm['id'] == id);
       if (index != -1) {
