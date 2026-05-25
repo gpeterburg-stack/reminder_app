@@ -3,8 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:timezone/timezone.dart' as tz;
-import 'package:timezone/data/latest.dart' as tz;
 import 'package:permission_handler/permission_handler.dart';
 import 'create_reminder_page.dart';
 
@@ -18,11 +16,9 @@ class RemindersPage extends StatefulWidget {
 class _RemindersPageState extends State<RemindersPage> {
   List<Map<String, dynamic>> _alarms = [];
   List<Map<String, dynamic>> _medications = [];
-  Map<String, List<int>> _notificationIds = {};
   bool _isLoading = true;
   
-  final FlutterLocalNotificationsPlugin _notificationsPlugin = 
-      FlutterLocalNotificationsPlugin();
+  late FlutterLocalNotificationsPlugin _notificationsPlugin;
 
   @override
   void initState() {
@@ -31,8 +27,9 @@ class _RemindersPageState extends State<RemindersPage> {
   }
 
   Future<void> _initializeApp() async {
+    _notificationsPlugin = FlutterLocalNotificationsPlugin();
     await _initializeNotifications();
-    await _loadNotificationIds();
+    await _requestPermissions();
     await _loadMedications();
     await _loadAlarms();
     setState(() {
@@ -41,8 +38,6 @@ class _RemindersPageState extends State<RemindersPage> {
   }
 
   Future<void> _initializeNotifications() async {
-    tz.initializeTimeZones();
-    
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     
@@ -60,7 +55,65 @@ class _RemindersPageState extends State<RemindersPage> {
       },
     );
     
-    await _requestAndroidPermissions();
+    await _createNotificationChannel();
+  }
+
+  Future<void> _createNotificationChannel() async {
+    if (Platform.isAndroid) {
+      const AndroidNotificationChannel channel = AndroidNotificationChannel(
+        'medication_channel',
+        'Напоминания о лекарствах',
+        description: 'Уведомления о необходимости принять лекарство',
+        importance: Importance.high,
+        enableVibration: true,
+        playSound: true,
+        showBadge: true,
+      );
+      
+      final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+          _notificationsPlugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+              
+      await androidImplementation?.createNotificationChannel(channel);
+      debugPrint('Канал уведомлений создан');
+    }
+  }
+
+  // ТЕСТОВОЕ УВЕДОМЛЕНИЕ - РАБОТАЕТ
+  Future<void> _sendTestNotification() async {
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'medication_channel',
+      'Напоминания о лекарствах',
+      importance: Importance.high,
+      priority: Priority.high,
+    );
+    
+    const NotificationDetails details = NotificationDetails(android: androidDetails);
+    
+    await _notificationsPlugin.show(
+      999,
+      'Тестовое уведомление',
+      'Если вы видите это - уведомления работают!',
+      details,
+    );
+  }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      try {
+        if (await Permission.notification.isDenied) {
+          await Permission.notification.request();
+        }
+        
+        if (await Permission.scheduleExactAlarm.isDenied) {
+          await Permission.scheduleExactAlarm.request();
+        }
+        
+        debugPrint('Разрешения проверены');
+      } catch (e) {
+        debugPrint('Ошибка запроса разрешений: $e');
+      }
+    }
   }
 
   void _showMedicationInfoDialog(String alarmId) {
@@ -85,135 +138,44 @@ class _RemindersPageState extends State<RemindersPage> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('OK'),
+            child: const Text('Принял(а)'),
           ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _requestAndroidPermissions() async {
-    if (Platform.isAndroid) {
-      try {
-        if (await Permission.notification.isDenied) {
-          await Permission.notification.request();
-        }
-        
-        if (await Permission.scheduleExactAlarm.isDenied) {
-          await Permission.scheduleExactAlarm.request();
-        }
-        
-        if (await Permission.ignoreBatteryOptimizations.isDenied) {
-          await Permission.ignoreBatteryOptimizations.request();
-        }
-        
-        debugPrint('Все разрешения получены');
-      } catch (e) {
-        debugPrint('Ошибка запроса разрешений: $e');
-      }
-    }
-  }
-
-  Future<bool> _hasExactAlarmPermission() async {
-    if (Platform.isAndroid) {
-      if (await Permission.scheduleExactAlarm.isGranted) {
-        return true;
-      }
-      
-      if (await Permission.scheduleExactAlarm.request().isGranted) {
-        return true;
-      }
-      
-      if (await Permission.scheduleExactAlarm.shouldShowRequestRationale) {
-        _showExactAlarmPermissionDialog();
-      }
-      
-      return false;
-    }
-    return true;
-  }
-
-  void _showExactAlarmPermissionDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Точные напоминания'),
-        content: const Text(
-          'Для работы точных напоминаний о лекарствах необходимо разрешить приложению использовать точные будильники. '
-          'Вы будете перенаправлены в настройки.'
-        ),
-        actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Отмена'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              await openAppSettings();
-            },
-            child: const Text('Открыть настройки'),
+            child: const Text('Напомнить позже'),
           ),
         ],
       ),
     );
   }
 
-  Future<bool> _checkPermissions() async {
-    if (Platform.isAndroid) {
-      final notificationGranted = await Permission.notification.isGranted;
-      final exactAlarmGranted = await Permission.scheduleExactAlarm.isGranted;
-      
-      if (!notificationGranted || !exactAlarmGranted) {
-        await _requestAndroidPermissions();
-        return await Permission.notification.isGranted;
-      }
-      return true;
-    }
-    return true;
-  }
-
+  // ОБЫЧНОЕ УВЕДОМЛЕНИЕ - ИСПОЛЬЗУЕТ ТОТ ЖЕ МЕТОД, ЧТО И ТЕСТОВОЕ
   Future<void> _scheduleNotification(Map<String, dynamic> alarm) async {
     if (!alarm['enabled']) return;
-    
-    final hasExactPermission = await _hasExactAlarmPermission();
-    if (!hasExactPermission) {
-      debugPrint('Нет разрешения на точные будильники');
-      return;
-    }
-    
-    final hasPermissions = await _checkPermissions();
-    if (!hasPermissions) {
-      debugPrint('Нет разрешений для уведомлений');
-      return;
-    }
     
     final time = alarm['time'] as TimeOfDay;
     final days = alarm['days'] as List<int>;
     final medicationInfo = await _getMedicationInfoSafe(alarm);
     
-    await _cancelNotification(alarm['id']);
-    
+    // ТЕ ЖЕ НАСТРОЙКИ, ЧТО И В ТЕСТОВОМ УВЕДОМЛЕНИИ
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      'medication_reminders',
+      'medication_channel',
       'Напоминания о лекарствах',
-      channelDescription: 'Уведомления о необходимости принять лекарство',
       importance: Importance.high,
       priority: Priority.high,
-      enableVibration: true,
-      playSound: true,
     );
     
     const NotificationDetails notificationDetails = NotificationDetails(
       android: androidDetails,
     );
     
-    List<int> newNotificationIds = [];
     final alarmId = alarm['id'].toString();
+    final now = DateTime.now();
     
+    // Для каждого выбранного дня недели
     for (int day in days) {
-      final now = DateTime.now();
-      var scheduledDate = DateTime(
+      // Вычисляем дату следующего приема
+      DateTime scheduledDate = DateTime(
         now.year,
         now.month,
         now.day,
@@ -221,49 +183,48 @@ class _RemindersPageState extends State<RemindersPage> {
         time.minute,
       );
       
-      int dayDifference = day - scheduledDate.weekday;
-      if (dayDifference < 0) {
-        dayDifference += 7;
+      int daysToAdd = day - now.weekday;
+      if (daysToAdd < 0) {
+        daysToAdd += 7;
       }
-      scheduledDate = scheduledDate.add(Duration(days: dayDifference));
-      
-      if (scheduledDate.isBefore(now)) {
-        scheduledDate = scheduledDate.add(const Duration(days: 7));
+      if (daysToAdd == 0 && scheduledDate.isBefore(now)) {
+        daysToAdd = 7;
       }
       
-      int notificationId = (alarmId.hashCode + day).abs() % 1000000;
-      if (notificationId == 0) notificationId = day + 1;
+      scheduledDate = scheduledDate.add(Duration(days: daysToAdd));
       
-      try {
-        await _notificationsPlugin.zonedSchedule(
-          notificationId,
-          'Время принять лекарство',
-          medicationInfo,
-          tz.TZDateTime.from(scheduledDate, tz.local),
-          notificationDetails,
-          uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
-          payload: alarm['id'],
-          androidAllowWhileIdle: true,
-          matchDateTimeComponents: DateTimeComponents.time,
-          androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        );
-        newNotificationIds.add(notificationId);
-        debugPrint('Уведомление $notificationId запланировано на $scheduledDate для лекарства: $medicationInfo');
-      } catch (e) {
-        debugPrint('Ошибка планирования для дня $day: $e');
+      // Уникальный ID для каждого уведомления
+      int notificationId = (alarmId.hashCode + day).abs() % 1000;
+      
+      // Используем ТОТ ЖЕ МЕТОД show, что и в тестовом уведомлении
+      // Но с задержкой (schedule)
+      final timeUntilNotification = scheduledDate.difference(now);
+      
+      if (timeUntilNotification.inSeconds > 0) {
+        Future.delayed(timeUntilNotification, () async {
+          await _notificationsPlugin.show(
+            notificationId,
+            'Время принять лекарство',
+            medicationInfo,
+            notificationDetails,
+            payload: alarmId,
+          );
+          debugPrint('Уведомление отправлено для ${_getDayName(day)} в ${time.format(context)}');
+        });
+        
+        debugPrint('Запланировано на ${_getDayName(day)} через ${timeUntilNotification.inHours}ч ${timeUntilNotification.inMinutes.remainder(60)}мин');
       }
     }
-    
-    if (newNotificationIds.isNotEmpty) {
-      _notificationIds[alarm['id']] = newNotificationIds;
-      await _saveNotificationIds();
-    }
+  }
+
+  String _getDayName(int day) {
+    const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+    return days[day - 1];
   }
 
   Future<String> _getMedicationInfoSafe(Map<String, dynamic> alarm) async {
     final medicationId = alarm['medicationId']?.toString() ?? '';
     final medicationName = alarm['medicationName']?.toString() ?? '';
-    final medicationDosage = alarm['medicationDosage']?.toString() ?? '';
     
     if (medicationId.isNotEmpty) {
       final medication = _medications.firstWhere(
@@ -274,117 +235,25 @@ class _RemindersPageState extends State<RemindersPage> {
       if (medication.isNotEmpty) {
         final name = medication['name']?.toString() ?? '';
         final dosage = medication['dosage']?.toString() ?? '';
-        return '$name • $dosage';
-      } else {
-        debugPrint('Лекарство с ID $medicationId не найдено в списке');
-        if (medicationName.isNotEmpty) {
-          return '$medicationName • $medicationDosage';
-        }
+        return 'Примите: $name • $dosage';
       }
     }
     
     final name = medicationName.isNotEmpty ? medicationName : 'Неизвестное лекарство';
-    final dosage = medicationDosage.isNotEmpty ? medicationDosage : '';
-    return dosage.isNotEmpty ? '$name • $dosage' : name;
-  }
-
-  Future<void> _cancelNotification(String alarmId) async {
-    try {
-      List<int>? ids = _notificationIds[alarmId];
-      
-      if (ids != null && ids.isNotEmpty) {
-        for (int id in ids) {
-          await _notificationsPlugin.cancel(id);
-          debugPrint('🗑 Отменено уведомление с ID: $id');
-        }
-        _notificationIds.remove(alarmId);
-        await _saveNotificationIds();
-      } else {
-        final alarmIdInt = alarmId.hashCode;
-        for (int day = 1; day <= 7; day++) {
-          int possibleId = (alarmIdInt + day).abs() % 1000000;
-          if (possibleId == 0) possibleId = day;
-          await _notificationsPlugin.cancel(possibleId);
-        }
-        debugPrint('Отменены возможные уведомления для $alarmId');
-      }
-    } catch (e) {
-      debugPrint('Ошибка отмены уведомлений для $alarmId: $e');
-    }
-  }
-
-  Future<void> _saveNotificationIds() async {
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final file = File('${directory.path}/notification_ids.json');
-      Map<String, List<int>> idsToSave = {};
-      _notificationIds.forEach((key, value) {
-        idsToSave[key] = List<int>.from(value);
-      });
-      await file.writeAsString(jsonEncode(idsToSave));
-    } catch (e) {
-      debugPrint('Ошибка сохранения ID уведомлений: $e');
-    }
-  }
-
-  Future<void> _loadNotificationIds() async {
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final file = File('${directory.path}/notification_ids.json');
-      
-      if (await file.exists()) {
-        final contents = await file.readAsString();
-        if (contents.isNotEmpty) {
-          final Map<String, dynamic> decoded = jsonDecode(contents);
-          _notificationIds = decoded.map((key, value) => 
-            MapEntry(key, List<int>.from(value))
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint('Ошибка загрузки ID уведомлений: $e');
-    }
+    return 'Примите: $name';
   }
 
   Future<void> _scheduleAllNotifications() async {
     debugPrint('Планирование всех уведомлений...');
-    int scheduledCount = 0;
     
     for (var alarm in _alarms) {
       if (alarm['enabled']) {
-        final medicationId = alarm['medicationId']?.toString() ?? '';
-        if (medicationId.isNotEmpty) {
-          final medicationExists = _medications.any((med) => med['id'] == medicationId);
-          if (!medicationExists) {
-            debugPrint('Пропуск напоминания: лекарство с ID $medicationId не найдено');
-            continue;
-          }
-        }
-        
         await _scheduleNotification(alarm);
-        scheduledCount++;
       }
     }
     
-    debugPrint('Запланировано уведомлений: $scheduledCount');
-    await _checkPendingNotifications();
-  }
-
-  Future<void> _checkPendingNotifications() async {
-    final pending = await _notificationsPlugin.pendingNotificationRequests();
-    debugPrint('Всего ожидающих уведомлений: ${pending.length}');
-  }
-
-  Future<void> _clearAllNotifications() async {
-    await _notificationsPlugin.cancelAll();
-    _notificationIds.clear();
-    await _saveNotificationIds();
-    debugPrint('🗑 Все уведомления очищены');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Все уведомления очищены')),
-      );
-    }
+    // Отправляем тестовое для проверки
+    await _sendTestNotification();
   }
 
   Future<void> _loadMedications() async {
@@ -410,7 +279,7 @@ class _RemindersPageState extends State<RemindersPage> {
         }
       }
     } catch (e) {
-      debugPrint('Ошибка при загрузке лекарств: $e');
+      debugPrint('Ошибка загрузки лекарств: $e');
     }
   }
 
@@ -425,23 +294,13 @@ class _RemindersPageState extends State<RemindersPage> {
         if (contents.isNotEmpty) {
           final List<dynamic> jsonList = jsonDecode(contents);
           
-          final validAlarms = jsonList.where((item) {
-            final medicationId = item['medicationId']?.toString() ?? '';
-            if (medicationId.isEmpty) return true;
-            return _medications.any((med) => med['id'] == medicationId);
-          }).toList();
-          
-          if (validAlarms.length != jsonList.length) {
-            debugPrint('Удалено ${jsonList.length - validAlarms.length} невалидных напоминаний');
-          }
-          
           setState(() {
-            _alarms = validAlarms.map((item) {
+            _alarms = jsonList.map((item) {
               final timeData = item['time'];
               int hour = 0;
               int minute = 0;
               
-              if (timeData != null) {
+              if (timeData is Map) {
                 hour = timeData['hour'] ?? 0;
                 minute = timeData['minute'] ?? 0;
               }
@@ -458,60 +317,13 @@ class _RemindersPageState extends State<RemindersPage> {
             }).toList();
           });
           
-          if (validAlarms.length != jsonList.length) {
-            await _saveAlarmsToFile();
-          }
-          
           debugPrint('Загружено напоминаний: ${_alarms.length}');
           await _scheduleAllNotifications();
-        } else {
-          _addTestAlarms();
         }
-      } else {
-        _addTestAlarms();
       }
     } catch (e) {
-      debugPrint('Ошибка при загрузке напоминаний: $e');
-      _addTestAlarms();
+      debugPrint('Ошибка загрузки напоминаний: $e');
     }
-  }
-
-  void _addTestAlarms() {
-    debugPrint('➕ Добавление тестовых напоминаний');
-    setState(() {
-      _alarms = [
-        {
-          'id': DateTime.now().millisecondsSinceEpoch.toString(),
-          'time': const TimeOfDay(hour: 7, minute: 30),
-          'days': [1, 2, 3, 4, 5],
-          'medicationId': '',
-          'medicationName': 'Аспирин',
-          'medicationDosage': '1 таблетка',
-          'enabled': true,
-        },
-        {
-          'id': (DateTime.now().millisecondsSinceEpoch + 1).toString(),
-          'time': const TimeOfDay(hour: 9, minute: 0),
-          'days': [1, 3, 5],
-          'medicationId': '',
-          'medicationName': 'Парацетамол',
-          'medicationDosage': '3 таблетки',
-          'enabled': true,
-        },
-        {
-          'id': (DateTime.now().millisecondsSinceEpoch + 2).toString(),
-          'time': const TimeOfDay(hour: 22, minute: 0),
-          'days': [1, 2, 3, 4, 5, 6, 7],
-          'medicationId': '',
-          'medicationName': 'Витамин D',
-          'medicationDosage': '1 капсула',
-          'enabled': false,
-        },
-      ];
-    });
-    
-    _saveAlarmsToFile();
-    _scheduleAllNotifications();
   }
 
   Future<void> _saveAlarmsToFile() async {
@@ -535,8 +347,9 @@ class _RemindersPageState extends State<RemindersPage> {
       }).toList();
       
       await file.writeAsString(jsonEncode(jsonList));
+      debugPrint('Напоминания сохранены');
     } catch (e) {
-      debugPrint('Ошибка при сохранении напоминания: $e');
+      debugPrint('Ошибка сохранения: $e');
     }
   }
 
@@ -575,7 +388,7 @@ class _RemindersPageState extends State<RemindersPage> {
   }
 
   void _addAlarm(Map<String, dynamic> alarm) async {
-    debugPrint('➕ Добавление нового напоминания');
+    debugPrint('Добавление нового напоминания');
     setState(() {
       _alarms.add(alarm);
     });
@@ -609,8 +422,6 @@ class _RemindersPageState extends State<RemindersPage> {
 
   void _deleteAlarm(String id) async {
     debugPrint('🗑 Удаление напоминания: $id');
-    await _cancelNotification(id);
-    
     setState(() {
       _alarms.removeWhere((alarm) => alarm['id'] == id);
     });
@@ -618,7 +429,7 @@ class _RemindersPageState extends State<RemindersPage> {
     
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Напоминание удалено'), duration: Duration(seconds: 2)),
+        const SnackBar(content: Text('🗑 Напоминание удалено'), duration: Duration(seconds: 2)),
       );
     }
   }
@@ -632,14 +443,12 @@ class _RemindersPageState extends State<RemindersPage> {
       }
     });
     
+    await _saveAlarmsToFile();
+    
     if (value) {
       final alarm = _alarms.firstWhere((alarm) => alarm['id'] == id);
       await _scheduleNotification(alarm);
-    } else {
-      await _cancelNotification(id);
     }
-    
-    await _saveAlarmsToFile();
   }
 
   @override
@@ -660,21 +469,14 @@ class _RemindersPageState extends State<RemindersPage> {
                         ),
                         const Spacer(),
                         IconButton(
-                          icon: const Icon(Icons.refresh),
+                          icon: const Icon(Icons.notifications_active),
                           onPressed: () async {
                             await _scheduleAllNotifications();
-                            if (mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Уведомления перепланированы')),
-                              );
-                            }
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Уведомления перепланированы')),
+                            );
                           },
                           tooltip: 'Перепланировать уведомления',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.clear_all),
-                          onPressed: _clearAllNotifications,
-                          tooltip: 'Очистить все уведомления',
                         ),
                       ],
                     ),
@@ -710,12 +512,13 @@ class _RemindersPageState extends State<RemindersPage> {
                                 onDismissed: (direction) => _deleteAlarm(alarm['id']),
                                 child: Card(
                                   margin: const EdgeInsets.only(bottom: 12),
+                                  elevation: 2,
                                   child: ListTile(
                                     contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                                     leading: Icon(
-                                      Icons.alarm,
+                                      alarm['enabled'] ? Icons.notifications_active : Icons.notifications_off,
                                       size: 40,
-                                      color: alarm['enabled'] ? Colors.green : Colors.grey,
+                                      color: alarm['enabled'] ? Color.fromARGB(255, 117, 255, 170) : Colors.grey,
                                     ),
                                     title: Row(
                                       children: [
@@ -751,7 +554,7 @@ class _RemindersPageState extends State<RemindersPage> {
                                     trailing: Switch(
                                       value: alarm['enabled'] ?? true,
                                       onChanged: (value) => _toggleAlarm(alarm['id'], value),
-                                      activeColor: Colors.green,
+                                      activeColor: Color.fromARGB(255, 117, 255, 170),
                                     ),
                                     onTap: () {
                                       Navigator.push(
