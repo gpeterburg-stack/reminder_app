@@ -1,8 +1,14 @@
 import 'package:flutter/material.dart';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'create_course_page.dart';
 import 'medications_page.dart';
+
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
 
 class MedicationCourse {
   final String id;
@@ -118,22 +124,222 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
   File? _profileFile;
   File? _coursesFile;
   
+  // Хранилище для запланированных таймеров
+  List<Timer> _scheduledTimers = [];
+  
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _initNotifications();
     _loadProfile();
     _loadCourses();
   }
   
   @override
   void dispose() {
+    // Отменяем все таймеры при закрытии
+    for (var timer in _scheduledTimers) {
+      timer.cancel();
+    }
     _nameController.dispose();
     _ageController.dispose();
     _weightController.dispose();
     _diseaseController.dispose();
     _tabController.dispose();
     super.dispose();
+  }
+  
+  Future<void> _initNotifications() async {
+    // Настройка для Android
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    
+    const DarwinInitializationSettings initializationSettingsIOS =
+        DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
+    
+    const InitializationSettings initializationSettings = InitializationSettings(
+      android: initializationSettingsAndroid,
+      iOS: initializationSettingsIOS,
+    );
+    
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+    
+    // Создаем канал для уведомлений (Android 8+)
+    if (Platform.isAndroid) {
+      const AndroidNotificationChannel channel = AndroidNotificationChannel(
+        'medication_channel',
+        'Напоминания о лекарствах',
+        description: 'Канал для напоминаний о приеме лекарств',
+        importance: Importance.high,
+        enableVibration: true,
+        playSound: true,
+      );
+      
+      final androidPlugin = flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      await androidPlugin?.createNotificationChannel(channel);
+    }
+  }
+  
+  // Простой метод для отправки уведомления
+  Future<void> _showNotification(String title, String body, int id) async {
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      'medication_channel',
+      'Напоминания о лекарствах',
+      importance: Importance.high,
+      priority: Priority.high,
+      showWhen: true,
+      enableVibration: true,
+      playSound: true,
+    );
+    
+    const DarwinNotificationDetails iOSDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
+    
+    const NotificationDetails details = NotificationDetails(
+      android: androidDetails,
+      iOS: iOSDetails,
+    );
+    
+    await flutterLocalNotificationsPlugin.show(
+      id,
+      title,
+      body,
+      details,
+    );
+    
+    debugPrint('🔔 Уведомление отправлено: $title');
+  }
+  
+  // Планирование уведомлений с помощью Timer
+  void _scheduleReminders(MedicationCourse course) {
+    if (!course.isActive || course.isExpired) return;
+    
+    final now = DateTime.now();
+    final endDate = course.endDate;
+    
+    debugPrint('📢 Планирование уведомлений для: ${course.medicationName}');
+    
+    for (var time in course.reminderTimes) {
+      // Вычисляем следующее время приема
+      DateTime nextTime = DateTime(
+        now.year,
+        now.month,
+        now.day,
+        time.hour,
+        time.minute,
+      );
+      
+      // Если время уже прошло сегодня, планируем на завтра
+      if (nextTime.isBefore(now)) {
+        nextTime = nextTime.add(const Duration(days: 1));
+      }
+      
+      // Проверяем, не выходит ли за дату окончания
+      if (endDate != null && nextTime.isAfter(endDate)) {
+        continue;
+      }
+      
+      final notificationId = (course.id.hashCode + time.hour * 60 + time.minute).abs() % 100000;
+      
+      // Создаем таймер для первого уведомления
+      final delay = nextTime.difference(now);
+      if (delay.inSeconds > 0) {
+        Timer(delay, () {
+          _showNotification(
+            'Время принять лекарство 💊',
+            '${course.medicationName} - ${course.dosage}',
+            notificationId,
+          );
+          
+          // После отправки планируем следующее на завтра
+          _scheduleDailyReminder(course, time, notificationId);
+        });
+        
+        _scheduledTimers.add(Timer(delay, () {}));
+        debugPrint('⏰ Запланировано на ${nextTime.hour}:${nextTime.minute} (через ${delay.inHours}ч ${delay.inMinutes.remainder(60)}мин)');
+      }
+    }
+  }
+  
+  // Планирование ежедневных напоминаний
+  void _scheduleDailyReminder(MedicationCourse course, TimeOfDay time, int baseId) {
+    if (!course.isActive || course.isExpired) return;
+    
+    final now = DateTime.now();
+    final endDate = course.endDate;
+    
+    // Планируем на завтра
+    DateTime tomorrow = DateTime(
+      now.year,
+      now.month,
+      now.day + 1,
+      time.hour,
+      time.minute,
+    );
+    
+    // Проверяем дату окончания
+    if (endDate != null && tomorrow.isAfter(endDate)) {
+      debugPrint('❌ Курс закончился, уведомления отменены');
+      return;
+    }
+    
+    final delay = tomorrow.difference(now);
+    if (delay.inSeconds > 0) {
+      Timer(delay, () {
+        _showNotification(
+          'Время принять лекарство 💊',
+          '${course.medicationName} - ${course.dosage}',
+          baseId,
+        );
+        
+        // Рекурсивно планируем следующий день
+        _scheduleDailyReminder(course, time, baseId);
+      });
+      
+      debugPrint('🔄 Запланировано повторение на завтра в ${time.hour}:${time.minute}');
+    }
+  }
+  
+  void _rescheduleAllReminders() {
+    // Отменяем все существующие таймеры
+    for (var timer in _scheduledTimers) {
+      timer.cancel();
+    }
+    _scheduledTimers.clear();
+    
+    // Планируем новые для всех активных курсов
+    for (var course in _activeCourses) {
+      if (course.isActive && !course.isExpired) {
+        _scheduleReminders(course);
+      }
+    }
+    
+    // Показываем тестовое уведомление
+    _showNotification(
+      '✅ Напоминания активированы',
+      'Все напоминания о лекарствах настроены',
+      999999,
+    );
+    
+    debugPrint('✅ Все уведомления перепланированы');
+  }
+  
+  Future<void> _cancelAllReminders() async {
+    for (var timer in _scheduledTimers) {
+      timer.cancel();
+    }
+    _scheduledTimers.clear();
+    await flutterLocalNotificationsPlugin.cancelAll();
+    debugPrint('❌ Все уведомления отменены');
   }
   
   Future<void> _getProfileFile() async {
@@ -179,10 +385,10 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
           final List<dynamic> jsonData = json.decode(data);
           final allCourses = jsonData.map((item) => MedicationCourse.fromJson(item)).toList();
           
-          // Проверяем и обновляем статусы курсов
+          List<MedicationCourse> updatedCourses = [];
           for (var course in allCourses) {
             if (course.isActive && course.isExpired) {
-              course = MedicationCourse(
+              final updatedCourse = MedicationCourse(
                 id: course.id,
                 medicationId: course.medicationId,
                 medicationName: course.medicationName,
@@ -195,14 +401,19 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                 isActive: false,
                 completedAt: DateTime.now(),
               );
+              updatedCourses.add(updatedCourse);
+            } else {
+              updatedCourses.add(course);
             }
           }
           
           setState(() {
-            _activeCourses = allCourses.where((c) => c.isActive && !c.isExpired).toList();
-            _completedCourses = allCourses.where((c) => !c.isActive || c.isExpired).toList();
+            _activeCourses = updatedCourses.where((c) => c.isActive && !c.isExpired).toList();
+            _completedCourses = updatedCourses.where((c) => !c.isActive || c.isExpired).toList();
           });
           
+          // Планируем уведомления после загрузки
+          _rescheduleAllReminders();
           await _saveCourses();
         }
       } catch (e) {
@@ -323,8 +534,13 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
           ),
           TextButton(
             onPressed: () async {
+              await _cancelAllReminders();
+              
               if (_profileFile != null && await _profileFile!.exists()) {
                 await _profileFile!.delete();
+              }
+              if (_coursesFile != null && await _coursesFile!.exists()) {
+                await _coursesFile!.delete();
               }
               setState(() {
                 _profileName = '';
@@ -333,6 +549,8 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                 _chronicDiseases = [];
                 _hasProfile = false;
                 _isEditing = true;
+                _activeCourses = [];
+                _completedCourses = [];
               });
               _clearControllers();
               Navigator.pop(context);
@@ -355,7 +573,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
   }
 
   Future<void> _addCourse() async {
-    // Загружаем список лекарств
     final medicationsFile = File('${(await getApplicationDocumentsDirectory()).path}/medications.json');
     List<Medication> medications = [];
     
@@ -384,11 +601,47 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
         _activeCourses.add(result);
       });
       await _saveCourses();
-      _showSnackBar('Курс лечения добавлен');
+      _scheduleReminders(result);
+      _showSnackBar('Курс лечения добавлен. Установлены напоминания!');
     }
   }
   
-  void _completeCourse(MedicationCourse course) async {
+  Future<void> _editCourse(MedicationCourse course) async {
+    final medicationsFile = File('${(await getApplicationDocumentsDirectory()).path}/medications.json');
+    List<Medication> medications = [];
+    
+    if (await medicationsFile.exists()) {
+      final contents = await medicationsFile.readAsString();
+      if (contents.isNotEmpty) {
+        final List<dynamic> jsonList = json.decode(contents);
+        medications = jsonList.map((item) => Medication.fromJson(item)).toList();
+      }
+    }
+    
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CreateCoursePage(
+          medications: medications,
+          editingCourse: course,
+        ),
+      ),
+    );
+    
+    if (result != null && result is MedicationCourse) {
+      setState(() {
+        final index = _activeCourses.indexWhere((c) => c.id == course.id);
+        if (index != -1) {
+          _activeCourses[index] = result;
+        }
+      });
+      await _saveCourses();
+      _rescheduleAllReminders();
+      _showSnackBar('Курс лечения обновлен');
+    }
+  }
+  
+  Future<void> _completeCourse(MedicationCourse course) async {
     setState(() {
       _activeCourses.remove(course);
       final completedCourse = MedicationCourse(
@@ -407,10 +660,11 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
       _completedCourses.add(completedCourse);
     });
     await _saveCourses();
-    _showSnackBar('Курс завершен и перемещен в историю');
+    _rescheduleAllReminders();
+    _showSnackBar('Курс завершен. Напоминания отключены.');
   }
   
-  void _deleteCourse(MedicationCourse course) async {
+  Future<void> _deleteCourse(MedicationCourse course) async {
     setState(() {
       _completedCourses.remove(course);
     });
@@ -492,7 +746,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     
     return Column(
       children: [
-        // Профиль пользователя
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -568,7 +821,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
           ),
         ),
         
-        // Табы с курсами
         TabBar(
           controller: _tabController,
           labelColor: Colors.black,
@@ -758,7 +1010,7 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                     ],
                   ),
                 ),
-                if (isActive && daysLeft != null)
+                if (isActive && daysLeft != null && daysLeft > 0)
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
@@ -779,7 +1031,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
             
             const SizedBox(height: 12),
             
-            // Информация о курсе
             Row(
               children: [
                 Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
@@ -826,6 +1077,10 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                           '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
                           style: TextStyle(fontSize: 12, color: Colors.blue.shade700),
                         ),
+                        if (isActive) ...[
+                          const SizedBox(width: 4),
+                          Icon(Icons.notifications_active, size: 12, color: Colors.blue.shade700),
+                        ],
                       ],
                     ),
                   );
@@ -838,6 +1093,15 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  TextButton.icon(
+                    onPressed: () => _editCourse(course),
+                    icon: const Icon(Icons.edit, size: 18),
+                    label: const Text('Редактировать'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.blue.shade700,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                   TextButton.icon(
                     onPressed: () => _completeCourse(course),
                     icon: const Icon(Icons.check_circle_outline, size: 18),
@@ -1112,565 +1376,5 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
         ],
       ),
     );
-  }
-}
-
-// Страница создания курса с фиксированной кнопкой
-class CreateCoursePage extends StatefulWidget {
-  final List<Medication> medications;
-  
-  const CreateCoursePage({super.key, required this.medications});
-
-  @override
-  State<CreateCoursePage> createState() => _CreateCoursePageState();
-}
-
-class _CreateCoursePageState extends State<CreateCoursePage> {
-  Medication? _selectedMedication;
-  CourseDurationType _durationType = CourseDurationType.unlimited;
-  int _durationValue = 1;
-  DateTime _startDate = DateTime.now();
-  DateTime? _customEndDate;
-  bool _useCustomEndDate = false;
-  final List<TimeOfDay> _reminderTimes = [];
-  
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Новый курс лечения'),
-        backgroundColor: const Color.fromARGB(255, 117, 255, 170),
-        foregroundColor: Colors.black,
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Выбор лекарства
-                  const Text(
-                    'Выберите лекарство',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.grey.shade300),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: DropdownButton<Medication>(
-                      isExpanded: true,
-                      hint: const Text('Выберите лекарство'),
-                      value: _selectedMedication,
-                      items: widget.medications.map((med) {
-                        return DropdownMenuItem(
-                          value: med,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(med.name, style: const TextStyle(fontWeight: FontWeight.w500)),
-                              Text(med.dosage, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedMedication = value;
-                        });
-                      },
-                      underline: const SizedBox(),
-                    ),
-                  ),
-                  
-                  const SizedBox(height: 24),
-                  
-                  // Дата начала
-                  const Text(
-                    'Дата начала курса',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  InkWell(
-                    onTap: () async {
-                      final date = await showDatePicker(
-                        context: context,
-                        initialDate: _startDate,
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (date != null) {
-                        setState(() {
-                          _startDate = date;
-                          if (_useCustomEndDate && _customEndDate != null && _customEndDate!.isBefore(date)) {
-                            _customEndDate = date.add(const Duration(days: 1));
-                          }
-                        });
-                      }
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(Icons.calendar_today, color: Colors.grey),
-                          const SizedBox(width: 12),
-                          Text(
-                            '${_startDate.day.toString().padLeft(2, '0')}.${_startDate.month.toString().padLeft(2, '0')}.${_startDate.year}',
-                            style: const TextStyle(fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  
-                  const SizedBox(height: 24),
-                  
-                  // Выбор способа установки длительности
-                  const Text(
-                    'Способ установки длительности',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade50,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Column(
-                      children: [
-                        RadioListTile<bool>(
-                          title: const Text('Использовать период'),
-                          value: false,
-                          groupValue: _useCustomEndDate,
-                          onChanged: (value) {
-                            setState(() {
-                              _useCustomEndDate = value!;
-                            });
-                          },
-                        ),
-                        RadioListTile<bool>(
-                          title: const Text('Выбрать дату окончания'),
-                          value: true,
-                          groupValue: _useCustomEndDate,
-                          onChanged: (value) {
-                            setState(() {
-                              _useCustomEndDate = value!;
-                              if (_useCustomEndDate && _customEndDate == null) {
-                                _customEndDate = _startDate.add(const Duration(days: 7));
-                              }
-                            });
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                  
-                  const SizedBox(height: 16),
-                  
-                  // Вариант 1: Выбор периода
-                  if (!_useCustomEndDate) ...[
-                    const Text(
-                      'Длительность курса',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: DropdownButton<CourseDurationType>(
-                        isExpanded: true,
-                        value: _durationType,
-                        items: const [
-                          DropdownMenuItem(
-                            value: CourseDurationType.unlimited,
-                            child: Text('Бессрочно'),
-                          ),
-                          DropdownMenuItem(
-                            value: CourseDurationType.days,
-                            child: Text('Дни'),
-                          ),
-                          DropdownMenuItem(
-                            value: CourseDurationType.weeks,
-                            child: Text('Недели'),
-                          ),
-                          DropdownMenuItem(
-                            value: CourseDurationType.months,
-                            child: Text('Месяцы'),
-                          ),
-                          DropdownMenuItem(
-                            value: CourseDurationType.years,
-                            child: Text('Годы'),
-                          ),
-                        ],
-                        onChanged: (value) {
-                          setState(() {
-                            _durationType = value!;
-                          });
-                        },
-                        underline: const SizedBox(),
-                      ),
-                    ),
-                    
-                    if (_durationType != CourseDurationType.unlimited) ...[
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              initialValue: _durationValue.toString(),
-                              keyboardType: TextInputType.number,
-                              decoration: InputDecoration(
-                                labelText: 'Количество',
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                              ),
-                              onChanged: (value) {
-                                setState(() {
-                                  _durationValue = int.tryParse(value) ?? 1;
-                                });
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                            decoration: BoxDecoration(
-                              color: Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(_getDurationLabel()),
-                          ),
-                        ],
-                      ),
-                    ],
-                    
-                    if (_durationType != CourseDurationType.unlimited) ...[
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.blue.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.event, color: Colors.blue.shade700),
-                            const SizedBox(width: 12),
-                            Text(
-                              'Дата окончания: ${_formatDate(_calculateEndDate())}',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.blue.shade700,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ],
-                  
-                  // Вариант 2: Ручной выбор даты окончания
-                  if (_useCustomEndDate) ...[
-                    const Text(
-                      'Дата окончания курса',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-                    ),
-                    const SizedBox(height: 12),
-                    InkWell(
-                      onTap: () async {
-                        final date = await showDatePicker(
-                          context: context,
-                          initialDate: _customEndDate ?? _startDate.add(const Duration(days: 7)),
-                          firstDate: _startDate.add(const Duration(days: 1)),
-                          lastDate: DateTime(2100),
-                        );
-                        if (date != null) {
-                          setState(() {
-                            _customEndDate = date;
-                          });
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.event_available, color: Colors.grey),
-                            const SizedBox(width: 12),
-                            Text(
-                              _customEndDate != null 
-                                  ? _formatDate(_customEndDate!)
-                                  : 'Выберите дату',
-                              style: TextStyle(
-                                fontSize: 16,
-                                color: _customEndDate != null ? Colors.black : Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    
-                    if (_customEndDate != null) ...[
-                      const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.orange.shade50,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.info_outline, color: Colors.orange.shade700),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'Длительность курса: ${_calculateDurationInDays()} ${_getDaysLabel(_calculateDurationInDays())}',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: Colors.orange.shade700,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ],
-                  
-                  const SizedBox(height: 24),
-                  
-                  // Время напоминаний
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'Время приема',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                      ),
-                      IconButton(
-                        onPressed: () async {
-                          final time = await showTimePicker(
-                            context: context,
-                            initialTime: TimeOfDay.now(),
-                          );
-                          if (time != null) {
-                            setState(() {
-                              _reminderTimes.add(time);
-                              _reminderTimes.sort((a, b) {
-                                if (a.hour != b.hour) return a.hour.compareTo(b.hour);
-                                return a.minute.compareTo(b.minute);
-                              });
-                            });
-                          }
-                        },
-                        icon: Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: const Color.fromARGB(255, 117, 255, 170),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Icon(Icons.add, color: Colors.black),
-                        ),
-                      ),
-                    ],
-                  ),
-                  
-                  const SizedBox(height: 12),
-                  
-                  if (_reminderTimes.isEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(20),
-                      decoration: BoxDecoration(
-                        color: Colors.grey.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Center(
-                        child: Text(
-                          'Нажмите + чтобы добавить время приема',
-                          style: TextStyle(color: Colors.grey.shade600),
-                        ),
-                      ),
-                    )
-                  else
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: _reminderTimes.asMap().entries.map((entry) {
-                        final index = entry.key;
-                        final time = entry.value;
-                        return Chip(
-                          avatar: const Icon(Icons.access_time, size: 18),
-                          label: Text(
-                            '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
-                          ),
-                          onDeleted: () {
-                            setState(() {
-                              _reminderTimes.removeAt(index);
-                            });
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  
-                  // Добавляем отступ снизу для контента
-                  const SizedBox(height: 16),
-                ],
-              ),
-            ),
-          ),
-          
-          // Фиксированная кнопка внизу
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.1),
-                  spreadRadius: 1,
-                  blurRadius: 10,
-                  offset: const Offset(0, -2),
-                ),
-              ],
-            ),
-            child: SafeArea(
-              child: ElevatedButton(
-                onPressed: _canCreateCourse() ? _createCourse : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color.fromARGB(255, 117, 255, 170),
-                  foregroundColor: Colors.black,
-                  minimumSize: const Size(double.infinity, 50),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: const Text(
-                  'Создать курс',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  bool _canCreateCourse() {
-    if (_selectedMedication == null) return false;
-    if (_useCustomEndDate && _customEndDate == null) return false;
-    return true;
-  }
-  
-  String _getDurationLabel() {
-    switch (_durationType) {
-      case CourseDurationType.days:
-        return _durationValue == 1 ? 'день' : 
-               _durationValue < 5 ? 'дня' : 'дней';
-      case CourseDurationType.weeks:
-        return _durationValue == 1 ? 'неделя' : 
-               _durationValue < 5 ? 'недели' : 'недель';
-      case CourseDurationType.months:
-        return _durationValue == 1 ? 'месяц' : 
-               _durationValue < 5 ? 'месяца' : 'месяцев';
-      case CourseDurationType.years:
-        return _durationValue == 1 ? 'год' : 
-               _durationValue < 5 ? 'года' : 'лет';
-      default:
-        return '';
-    }
-  }
-  
-  String _getDaysLabel(int days) {
-    if (days == 1) return 'день';
-    if (days >= 2 && days <= 4) return 'дня';
-    return 'дней';
-  }
-  
-  DateTime _calculateEndDate() {
-    switch (_durationType) {
-      case CourseDurationType.days:
-        return _startDate.add(Duration(days: _durationValue));
-      case CourseDurationType.weeks:
-        return _startDate.add(Duration(days: _durationValue * 7));
-      case CourseDurationType.months:
-        return DateTime(
-          _startDate.year,
-          _startDate.month + _durationValue,
-          _startDate.day,
-        );
-      case CourseDurationType.years:
-        return DateTime(
-          _startDate.year + _durationValue,
-          _startDate.month,
-          _startDate.day,
-        );
-      default:
-        return _startDate;
-    }
-  }
-  
-  int _calculateDurationInDays() {
-    if (_customEndDate == null) return 0;
-    return _customEndDate!.difference(_startDate).inDays;
-  }
-  
-  String _formatDate(DateTime date) {
-    return '${date.day.toString().padLeft(2, '0')}.${date.month.toString().padLeft(2, '0')}.${date.year}';
-  }
-  
-  void _createCourse() {
-    DateTime? endDate;
-    CourseDurationType durationType;
-    int? durationValue;
-    
-    if (_useCustomEndDate) {
-      endDate = _customEndDate;
-      durationType = CourseDurationType.unlimited;
-      durationValue = null;
-    } else {
-      if (_durationType == CourseDurationType.unlimited) {
-        endDate = null;
-      } else {
-        endDate = _calculateEndDate();
-      }
-      durationType = _durationType;
-      durationValue = _durationType != CourseDurationType.unlimited ? _durationValue : null;
-    }
-    
-    final course = MedicationCourse(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      medicationId: _selectedMedication!.id,
-      medicationName: _selectedMedication!.name,
-      dosage: _selectedMedication!.dosage,
-      startDate: _startDate,
-      endDate: endDate,
-      durationType: durationType,
-      durationValue: durationValue,
-      reminderTimes: _reminderTimes,
-      isActive: true,
-      completedAt: null,
-    );
-    
-    Navigator.pop(context, course);
   }
 }
