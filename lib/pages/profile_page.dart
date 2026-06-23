@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:async';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:csv/csv.dart';
 import 'create_course_page.dart';
 import 'medications_page.dart';
 
@@ -124,13 +126,13 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
   File? _profileFile;
   File? _coursesFile;
   
-  // Хранилище для запланированных таймеров
   List<Timer> _scheduledTimers = [];
   
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _requestPermissions();
     _initNotifications();
     _loadProfile();
     _loadCourses();
@@ -138,7 +140,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
   
   @override
   void dispose() {
-    // Отменяем все таймеры при закрытии
     for (var timer in _scheduledTimers) {
       timer.cancel();
     }
@@ -149,9 +150,38 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     _tabController.dispose();
     super.dispose();
   }
+
+  Future<void> _requestPermissions() async {
+    if (Platform.isAndroid) {
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+      
+      if (await Permission.storage.isDenied) {
+        await Permission.storage.request();
+      }
+      
+      if (await Permission.photos.isDenied) {
+        await Permission.photos.request();
+      }
+      
+      if (await Permission.videos.isDenied) {
+        await Permission.videos.request();
+      }
+      
+      if (await Permission.audio.isDenied) {
+        await Permission.audio.request();
+      }
+    }
+    
+    if (Platform.isIOS) {
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+    }
+  }
   
   Future<void> _initNotifications() async {
-    // Настройка для Android
     const AndroidInitializationSettings initializationSettingsAndroid =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     
@@ -169,7 +199,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     
     await flutterLocalNotificationsPlugin.initialize(initializationSettings);
     
-    // Создаем канал для уведомлений (Android 8+)
     if (Platform.isAndroid) {
       const AndroidNotificationChannel channel = AndroidNotificationChannel(
         'medication_channel',
@@ -186,8 +215,14 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     }
   }
   
-  // Простой метод для отправки уведомления
   Future<void> _showNotification(String title, String body, int id) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final status = await Permission.notification.status;
+      if (!status.isGranted) {
+        return;
+      }
+    }
+    
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'medication_channel',
       'Напоминания о лекарствах',
@@ -215,21 +250,15 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
       body,
       details,
     );
-    
-    debugPrint('🔔 Уведомление отправлено: $title');
   }
   
-  // Планирование уведомлений с помощью Timer
   void _scheduleReminders(MedicationCourse course) {
     if (!course.isActive || course.isExpired) return;
     
     final now = DateTime.now();
     final endDate = course.endDate;
     
-    debugPrint('📢 Планирование уведомлений для: ${course.medicationName}');
-    
     for (var time in course.reminderTimes) {
-      // Вычисляем следующее время приема
       DateTime nextTime = DateTime(
         now.year,
         now.month,
@@ -238,19 +267,16 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
         time.minute,
       );
       
-      // Если время уже прошло сегодня, планируем на завтра
       if (nextTime.isBefore(now)) {
         nextTime = nextTime.add(const Duration(days: 1));
       }
       
-      // Проверяем, не выходит ли за дату окончания
       if (endDate != null && nextTime.isAfter(endDate)) {
         continue;
       }
       
       final notificationId = (course.id.hashCode + time.hour * 60 + time.minute).abs() % 100000;
       
-      // Создаем таймер для первого уведомления
       final delay = nextTime.difference(now);
       if (delay.inSeconds > 0) {
         Timer(delay, () {
@@ -260,24 +286,20 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
             notificationId,
           );
           
-          // После отправки планируем следующее на завтра
           _scheduleDailyReminder(course, time, notificationId);
         });
         
         _scheduledTimers.add(Timer(delay, () {}));
-        debugPrint('⏰ Запланировано на ${nextTime.hour}:${nextTime.minute} (через ${delay.inHours}ч ${delay.inMinutes.remainder(60)}мин)');
       }
     }
   }
   
-  // Планирование ежедневных напоминаний
   void _scheduleDailyReminder(MedicationCourse course, TimeOfDay time, int baseId) {
     if (!course.isActive || course.isExpired) return;
     
     final now = DateTime.now();
     final endDate = course.endDate;
     
-    // Планируем на завтра
     DateTime tomorrow = DateTime(
       now.year,
       now.month,
@@ -286,9 +308,7 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
       time.minute,
     );
     
-    // Проверяем дату окончания
     if (endDate != null && tomorrow.isAfter(endDate)) {
-      debugPrint('❌ Курс закончился, уведомления отменены');
       return;
     }
     
@@ -301,36 +321,28 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
           baseId,
         );
         
-        // Рекурсивно планируем следующий день
         _scheduleDailyReminder(course, time, baseId);
       });
-      
-      debugPrint('🔄 Запланировано повторение на завтра в ${time.hour}:${time.minute}');
     }
   }
   
   void _rescheduleAllReminders() {
-    // Отменяем все существующие таймеры
     for (var timer in _scheduledTimers) {
       timer.cancel();
     }
     _scheduledTimers.clear();
     
-    // Планируем новые для всех активных курсов
-    for (var course in _activeCourses) {
-      if (course.isActive && !course.isExpired) {
-        _scheduleReminders(course);
+    Permission.notification.status.then((status) {
+      if (!status.isGranted) {
+        return;
       }
-    }
-    
-    // Показываем тестовое уведомление
-    _showNotification(
-      '✅ Напоминания активированы',
-      'Все напоминания о лекарствах настроены',
-      999999,
-    );
-    
-    debugPrint('✅ Все уведомления перепланированы');
+      
+      for (var course in _activeCourses) {
+        if (course.isActive && !course.isExpired) {
+          _scheduleReminders(course);
+        }
+      }
+    });
   }
   
   Future<void> _cancelAllReminders() async {
@@ -339,13 +351,18 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     }
     _scheduledTimers.clear();
     await flutterLocalNotificationsPlugin.cancelAll();
-    debugPrint('❌ Все уведомления отменены');
   }
   
   Future<void> _getProfileFile() async {
-    final directory = await getApplicationDocumentsDirectory();
-    _profileFile = File('${directory.path}/profile.json');
-    _coursesFile = File('${directory.path}/medication_courses.json');
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      _profileFile = File('${directory.path}/profile.json');
+      _coursesFile = File('${directory.path}/medication_courses.json');
+    } catch (e) {
+      final tempDir = Directory.systemTemp;
+      _profileFile = File('${tempDir.path}/profile.json');
+      _coursesFile = File('${tempDir.path}/medication_courses.json');
+    }
   }
   
   Future<void> _loadProfile() async {
@@ -412,7 +429,6 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
             _completedCourses = updatedCourses.where((c) => !c.isActive || c.isExpired).toList();
           });
           
-          // Планируем уведомления после загрузки
           _rescheduleAllReminders();
           await _saveCourses();
         }
@@ -447,6 +463,12 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     
     try {
       await _getProfileFile();
+      
+      if (_profileFile == null) {
+        _showSnackBar('❌ Ошибка: не удалось получить доступ к файловой системе');
+        return;
+      }
+      
       await _profileFile!.writeAsString(json.encode(profileData));
       
       setState(() {
@@ -457,9 +479,9 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
         _isEditing = false;
       });
       
-      _showSnackBar('Профиль успешно сохранен');
+      _showSnackBar('✅ Профиль успешно сохранен');
     } catch (e) {
-      _showSnackBar('Ошибка сохранения профиля: $e');
+      _showSnackBar('❌ Ошибка сохранения профиля: ${e.toString()}');
     }
   }
   
@@ -567,7 +589,7 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        duration: const Duration(seconds: 2),
+        duration: const Duration(seconds: 3),
       ),
     );
   }
@@ -670,6 +692,147 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
     });
     await _saveCourses();
     _showSnackBar('Курс удален из истории');
+  }
+
+  Future<void> _exportToCSV() async {
+    try {
+      if (_activeCourses.isEmpty && _completedCourses.isEmpty) {
+        _showSnackBar('Нет данных для экспорта');
+        return;
+      }
+      
+      List<List<String>> rows = [];
+      
+      rows.add([
+        'Тип',
+        '№',
+        'Название лекарства',
+        'Дозировка',
+        'Дата начала',
+        'Дата окончания',
+        'Длительность',
+        'Время приема',
+        'Осталось дней',
+        'Статус'
+      ]);
+      
+      for (int i = 0; i < _activeCourses.length; i++) {
+        final course = _activeCourses[i];
+        final daysLeft = course.endDate != null 
+            ? course.endDate!.difference(DateTime.now()).inDays 
+            : null;
+        
+        String durationText;
+        if (course.durationType == CourseDurationType.unlimited) {
+          durationText = 'Не ограничено';
+        } else {
+          durationText = '${course.durationValue} ${_getDurationTypeText(course.durationType)}';
+        }
+        
+        final timesText = course.reminderTimes
+            .map((t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}')
+            .join(', ');
+        
+        rows.add([
+          'Активный',
+          (i + 1).toString(),
+          course.medicationName,
+          course.dosage,
+          _formatDate(course.startDate),
+          course.endDate != null ? _formatDate(course.endDate!) : 'Не указано',
+          durationText,
+          timesText,
+          daysLeft != null ? daysLeft.toString() : '∞',
+          course.isExpired ? 'Просрочен' : 'Активен'
+        ]);
+      }
+      
+      for (int i = 0; i < _completedCourses.length; i++) {
+        final course = _completedCourses[i];
+        
+        String durationText;
+        if (course.durationType == CourseDurationType.unlimited) {
+          durationText = 'Не ограничено';
+        } else {
+          durationText = '${course.durationValue} ${_getDurationTypeText(course.durationType)}';
+        }
+        
+        final timesText = course.reminderTimes
+            .map((t) => '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}')
+            .join(', ');
+        
+        rows.add([
+          'Завершенный',
+          (i + 1).toString(),
+          course.medicationName,
+          course.dosage,
+          _formatDate(course.startDate),
+          course.endDate != null ? _formatDate(course.endDate!) : 'Не указано',
+          durationText,
+          timesText,
+          '-',
+          'Завершен'
+        ]);
+      }
+      
+      String csv = const ListToCsvConverter().convert(rows);
+      
+      String fileName = 'Курсы_лечения_${DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first}.csv';
+      String filePath;
+      
+      if (Platform.isAndroid) {
+        final downloadsDir = Directory('/storage/emulated/0/Download');
+        if (await downloadsDir.exists()) {
+          filePath = '${downloadsDir.path}/$fileName';
+        } else {
+          try {
+            final externalDir = await getExternalStorageDirectory();
+            if (externalDir != null) {
+              final downloadsPath = '${externalDir.path}/Download';
+              final altDownloadsDir = Directory(downloadsPath);
+              if (!await altDownloadsDir.exists()) {
+                await altDownloadsDir.create(recursive: true);
+              }
+              filePath = '$downloadsPath/$fileName';
+            } else {
+              final docDir = await getApplicationDocumentsDirectory();
+              filePath = '${docDir.path}/$fileName';
+            }
+          } catch (e) {
+            final docDir = await getApplicationDocumentsDirectory();
+            filePath = '${docDir.path}/$fileName';
+          }
+        }
+      } else if (Platform.isIOS) {
+        final directory = await getApplicationDocumentsDirectory();
+        filePath = '${directory.path}/$fileName';
+      } else {
+        final directory = await getApplicationDocumentsDirectory();
+        filePath = '${directory.path}/$fileName';
+      }
+      
+      await File(filePath).writeAsString(csv);
+      
+      _showSnackBar('✅ Файл сохранен в папке Downloads: $fileName');
+      
+    } catch (e) {
+      _showSnackBar('Ошибка экспорта: ${e.toString()}');
+    }
+  }
+
+  String _getDurationTypeText(CourseDurationType type) {
+    switch (type) {
+      case CourseDurationType.days:
+        return 'дней';
+      case CourseDurationType.weeks:
+        return 'недель';
+      case CourseDurationType.months:
+        return 'месяцев';
+      case CourseDurationType.years:
+        return 'лет';
+      case CourseDurationType.unlimited:
+        return 'не ограничено';
+    }
   }
   
   @override
@@ -821,6 +984,48 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
           ),
         ),
         
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Курсы лечения',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              if (_activeCourses.isNotEmpty || _completedCourses.isNotEmpty)
+                IconButton(
+                  onPressed: _exportToCSV,
+                  icon: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade100,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.file_download, color: Colors.orange),
+                  ),
+                  tooltip: 'Экспортировать все курсы в CSV',
+                ),
+              IconButton(
+                onPressed: _addCourse,
+                icon: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color.fromARGB(255, 117, 255, 170),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.add, color: Colors.black),
+                ),
+                tooltip: 'Добавить курс лечения',
+              ),
+            ],
+          ),
+        ),
+        
         TabBar(
           controller: _tabController,
           labelColor: Colors.black,
@@ -860,70 +1065,37 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
   }
   
   Widget _buildActiveCoursesTab() {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Текущие курсы лечения',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
+    return _activeCourses.isEmpty
+        ? Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.medication_liquid,
+                  size: 80,
+                  color: Colors.grey.shade300,
                 ),
-              ),
-              IconButton(
-                onPressed: _addCourse,
-                icon: Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: const Color.fromARGB(255, 117, 255, 170),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.add, color: Colors.black),
+                const SizedBox(height: 16),
+                Text(
+                  'Нет активных курсов',
+                  style: TextStyle(fontSize: 18, color: Colors.grey.shade600),
                 ),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: _activeCourses.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.medication_liquid,
-                        size: 80,
-                        color: Colors.grey.shade300,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Нет активных курсов',
-                        style: TextStyle(fontSize: 18, color: Colors.grey.shade600),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Нажмите + чтобы добавить курс',
-                        style: TextStyle(fontSize: 14, color: Colors.grey.shade500),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _activeCourses.length,
-                  itemBuilder: (context, index) {
-                    final course = _activeCourses[index];
-                    return _buildCourseCard(course, isActive: true);
-                  },
+                const SizedBox(height: 8),
+                Text(
+                  'Нажмите + чтобы добавить курс',
+                  style: TextStyle(fontSize: 14, color: Colors.grey.shade500),
                 ),
-        ),
-      ],
-    );
+              ],
+            ),
+          )
+        : ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: _activeCourses.length,
+            itemBuilder: (context, index) {
+              final course = _activeCourses[index];
+              return _buildCourseCard(course, isActive: true);
+            },
+          );
   }
   
   Widget _buildHistoryTab() {
@@ -999,6 +1171,7 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                           fontWeight: FontWeight.bold,
                           color: isActive ? Colors.black : Colors.grey.shade700,
                         ),
+                        overflow: TextOverflow.ellipsis,
                       ),
                       Text(
                         course.dosage,
@@ -1035,9 +1208,12 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
               children: [
                 Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
                 const SizedBox(width: 8),
-                Text(
-                  'Начало: ${_formatDate(course.startDate)}',
-                  style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                Expanded(
+                  child: Text(
+                    'Начало: ${_formatDate(course.startDate)}',
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
@@ -1048,9 +1224,12 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                 children: [
                   Icon(Icons.event, size: 16, color: Colors.grey.shade600),
                   const SizedBox(width: 8),
-                  Text(
-                    'Окончание: ${_formatDate(course.endDate!)}',
-                    style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                  Expanded(
+                    child: Text(
+                      'Окончание: ${_formatDate(course.endDate!)}',
+                      style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
@@ -1090,8 +1269,10 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
             
             if (isActive) ...[
               const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
+              Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 4,
+                runSpacing: 4,
                 children: [
                   TextButton.icon(
                     onPressed: () => _editCourse(course),
@@ -1099,15 +1280,18 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                     label: const Text('Редактировать'),
                     style: TextButton.styleFrom(
                       foregroundColor: Colors.blue.shade700,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: const Size(0, 36),
                     ),
                   ),
-                  const SizedBox(width: 8),
                   TextButton.icon(
                     onPressed: () => _completeCourse(course),
                     icon: const Icon(Icons.check_circle_outline, size: 18),
                     label: const Text('Завершить'),
                     style: TextButton.styleFrom(
                       foregroundColor: Colors.green.shade700,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      minimumSize: const Size(0, 36),
                     ),
                   ),
                 ],
@@ -1120,11 +1304,13 @@ class _ProfilePageState extends State<ProfilePage> with SingleTickerProviderStat
                 children: [
                   Icon(Icons.check_circle, size: 16, color: Colors.green.shade600),
                   const SizedBox(width: 8),
-                  Text(
-                    'Завершен: ${_formatDate(course.completedAt!)}',
-                    style: TextStyle(fontSize: 13, color: Colors.green.shade600),
+                  Expanded(
+                    child: Text(
+                      'Завершен: ${_formatDate(course.completedAt!)}',
+                      style: TextStyle(fontSize: 13, color: Colors.green.shade600),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
-                  const Spacer(),
                   IconButton(
                     onPressed: () => _deleteCourse(course),
                     icon: const Icon(Icons.delete_outline, size: 20),
